@@ -1,3 +1,5 @@
+--- START OF FILE index.html ---
+
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -691,8 +693,7 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     
     <!-- JSZip CDN (for downloading all images as zip) -->
-    <!-- Removed, as we only generate 1 image, not needing a zip. Keep if FIXED_GENERATE_COUNT > 1 is planned. -->
-    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script> -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 </head>
 <body class="bg-light-primary text-dark-primary">
@@ -786,8 +787,8 @@
             RATE_LIMIT_COOLDOWN_SECONDS: 60, // New constant for cooldown after 429
             MAX_IMAGE_SIZE_MB: 8, // Increased max size for detailed character images
             MAX_IMAGE_DIMENSIONS: { width: 4096, height: 4096 }, // Increased max dimensions
-            LOGO_IMAGE_PATH: 'image/LiyuChillGuy.png', 
-            SYSTEM_INSTRUCTION: {
+            LOGO_IMAGE_PATH: 'logo/LiyuChillGuy.png', 
+                        SYSTEM_INSTRUCTION: {
                 parts: [{
                     text: "You are an image generation AI. Your sole purpose is to create an image based on the user's text prompt and uploaded image. Do not respond with any text, greetings, or explanations. Only output the final image."
                 }]
@@ -1433,6 +1434,7 @@
          * @param {number} props.progress - Generation progress percentage.
          * @param {Function} props.onDownloadImage - Handler for downloading a single image.
          * @param {Function} props.onRegenerateImage - Handler to regenerate a single image.
+         * @param {Function} props.onDownloadAll - Handler to download all successful images as a zip.
          * @param {Function} props.onStartOver - Handler to reset the application.
          * @param {boolean} props.isAnyAiProcessActive - Flag to disable actions during AI processes.
          */
@@ -1442,7 +1444,8 @@
             progress, 
             onDownloadImage, 
             onRegenerateImage, 
-            onStartOver, // onDownloadAll removed as only 1 image is generated
+            onDownloadAll, 
+            onStartOver, 
             isAnyAiProcessActive 
         }) => {
             const resultsRef = useRef(null);
@@ -1542,8 +1545,7 @@
 
         // --- Main Application Component ---
         const App = () => {
-            const [uploadedImageFull, setUploadedImageFull] = useState(null); // 儲存完整的 Base64 URL (用於預覽)
-            const [uploadedImageData, setUploadedImageData] = useState(null); // 儲存 Base64 數據部分 (用於 API Payload)
+            const [uploadedImage, setUploadedImage] = useState(null); 
             const [uploadedImageMimeType, setUploadedImageMimeType] = useState(null); 
             const [generatedImages, setGeneratedImages] = useState([]);
             const [isLoading, setIsLoading] = useState(false);
@@ -1552,9 +1554,9 @@
             const [apiKey, setApiKey] = useState('');
             const [cooldownEndTime, setCooldownEndTime] = useState(0); 
 
-            // New state for the logo image
+            // New state for the logo image (UPDATED)
             const [logoImageDetails, setLogoImageDetails] = useState({
-                base64Data: null, // 儲存 Base64 數據部分 (用於 API Payload)
+                base64: null,
                 mimeType: null,
                 isLoading: true, // Renamed from 'loaded', now truly reflects loading state
                 error: false,    // Tracks if loading failed
@@ -1567,7 +1569,7 @@
                     setApiKey(savedApiKey);
                 }
 
-                // Function to fetch and convert the logo image to Base64
+                // Function to fetch and convert the logo image to Base64 (UPDATED)
                 const loadLogoImage = async () => {
                     try {
                         const response = await fetch(CONSTANTS.LOGO_IMAGE_PATH);
@@ -1577,7 +1579,7 @@
                         const blob = await response.blob();
                         const base64 = await blobToBase64(blob);
                         setLogoImageDetails({
-                            base64Data: base64.split(',')[1], // 提取並儲存 data 部分
+                            base64,
                             mimeType: blob.type,
                             isLoading: false, // Loading finished
                             error: false,
@@ -1621,9 +1623,8 @@
             const setAppErrorMemo = useCallback((message, consoleMessage) => setAppError(setError, message, consoleMessage), []);
             const dismissError = useCallback(() => setError(null), []);
 
-            const handleImageSelected = useCallback((base64ImageFull, mimeType) => {
-                setUploadedImageFull(base64ImageFull); // 儲存完整的 Base64 URL
-                setUploadedImageData(base64ImageFull.split(',')[1]); // 提取並儲存 Base64 數據部分
+            const handleImageSelected = useCallback((base64Image, mimeType) => {
+                setUploadedImage(base64Image);
                 setUploadedImageMimeType(mimeType);
                 setGeneratedImages([]); 
                 setError(null);
@@ -1644,7 +1645,7 @@
 
             const regenerateImageAtIndex = useCallback(async (imageIndex) => {
                 const imageToRegenerate = generatedImages[imageIndex];
-                if (!imageToRegenerate || !uploadedImageData || !uploadedImageMimeType) return; // 檢查 uploadedImageData
+                if (!imageToRegenerate || !uploadedImage || !uploadedImageMimeType) return;
             
                 setGeneratedImages(prev => prev.map((img, index) =>
                     index === imageIndex ? { ...img, status: 'pending', imageUrl: null } : img
@@ -1659,19 +1660,20 @@
                 }
     
                 try {
+                    const imageWithoutPrefix = uploadedImage.split(',')[1];
                     const modelInstruction = getModelInstruction(imageToRegenerate.prompt); 
                     
                     // Construct the parts array for Gemini API
                     const parts = [
                         CONSTANTS.SYSTEM_INSTRUCTION.parts[0],
                         { text: modelInstruction },
-                        { inlineData: { mimeType: uploadedImageMimeType, data: uploadedImageData } } // 使用預處理的數據部分
+                        { inlineData: { mimeType: uploadedImageMimeType, data: imageWithoutPrefix } }
                     ];
 
                     // Add logo image ONLY IF it loaded successfully
-                    if (!logoImageDetails.isLoading && !logoImageDetails.error && logoImageDetails.base64Data) { // 檢查 base64Data
+                    if (!logoImageDetails.isLoading && !logoImageDetails.error && logoImageDetails.base64) {
                         parts.push({
-                            inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64Data } // 使用預處理的數據部分
+                            inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64.split(',')[1] }
                         });
                     } else if (logoImageDetails.error) {
                         console.warn("Skipping logo image in payload due to previous loading error.");
@@ -1702,7 +1704,7 @@
                         index === imageIndex ? { ...img, status: 'failed' } : img
                     ));
                 }
-            }, [generatedImages, uploadedImageData, uploadedImageMimeType, getActiveApiKey, setError, figureGenerationTasks, logoImageDetails, setCooldownEndTime]); 
+            }, [generatedImages, uploadedImage, uploadedImageMimeType, getActiveApiKey, setError, figureGenerationTasks, logoImageDetails, setCooldownEndTime]); 
             
             // Generate all images logic
             const handleGenerateClick = useCallback(async () => {
@@ -1711,7 +1713,7 @@
                     return;
                 }
 
-                if (!uploadedImageData || !uploadedImageMimeType) { // 檢查 uploadedImageData
+                if (!uploadedImage || !uploadedImageMimeType) {
                     setAppError(setError, "請先上傳一張角色圖片！");
                     return;
                 }
@@ -1727,11 +1729,10 @@
                     setAppError(setError, "品牌 LOGO 圖片仍在載入中，請稍候。");
                     return;
                 }
-                if (logoImageDetails.error && !logoImageDetails.base64Data) { // 檢查 base64Data
+                if (logoImageDetails.error) {
                     setAppError(setError, "品牌 LOGO 圖片載入失敗，將無法包含 LOGO。請檢查瀏覽器控制台或嘗試重新整理。");
                     // Optionally, you could return here if logo is strictly required.
                     // For now, we'll proceed but log a warning and not include logo.
-                    return; // 嚴重錯誤，直接阻止生成
                 }
 
                 setIsLoading(true);
@@ -1739,6 +1740,7 @@
                 setGeneratedImages([]);
                 setCooldownEndTime(0); 
                 
+                const imageWithoutPrefix = uploadedImage.split(',')[1];
                 const initialPlaceholders = figureGenerationTasks.map(task => ({
                     id: task.id,
                     cleanId: task.cleanId, 
@@ -1762,13 +1764,13 @@
                         const parts = [
                             CONSTANTS.SYSTEM_INSTRUCTION.parts[0],
                             { text: modelInstruction },
-                            { inlineData: { mimeType: uploadedImageMimeType, data: uploadedImageData } } // 使用預處理的數據部分
+                            { inlineData: { mimeType: uploadedImageMimeType, data: imageWithoutPrefix } }
                         ];
 
                         // Add logo image ONLY IF it loaded successfully
-                        if (!logoImageDetails.isLoading && !logoImageDetails.error && logoImageDetails.base64Data) { // 檢查 base64Data
+                        if (!logoImageDetails.isLoading && !logoImageDetails.error && logoImageDetails.base64) {
                             parts.push({
-                                inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64Data } // 使用預處理的數據部分
+                                inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64.split(',')[1] }
                             });
                         } else if (logoImageDetails.error) {
                             console.warn("Skipping logo image in payload due to previous loading error.");
@@ -1803,7 +1805,7 @@
                 }
 
                 setIsLoading(false);
-            }, [uploadedImageData, uploadedImageMimeType, getActiveApiKey, figureGenerationTasks, setError, logoImageDetails, cooldownEndTime]);
+            }, [uploadedImage, uploadedImageMimeType, getActiveApiKey, figureGenerationTasks, setError, logoImageDetails, cooldownEndTime]);
 
             const triggerDownload = useCallback((href, fileName) => {
                 const link = document.createElement('a');
@@ -1823,8 +1825,7 @@
 
             const handleStartOver = useCallback(() => {
                 setGeneratedImages([]);
-                setUploadedImageFull(null); // 重置完整的 Base64 URL
-                setUploadedImageData(null);  // 重置 Base64 數據部分
+                setUploadedImage(null);
                 setUploadedImageMimeType(null);
                 setError(null);
                 setCooldownEndTime(0); 
@@ -1846,12 +1847,6 @@
                 if (cooldownEndTime > Date.now()) {
                     const remainingSeconds = Math.ceil((cooldownEndTime - Date.now()) / 1000);
                     return `請稍候 (${remainingSeconds} 秒)`;
-                }
-                if (logoImageDetails.isLoading) {
-                    return `載入 LOGO 圖片中...`;
-                }
-                if (logoImageDetails.error && !logoImageDetails.base64Data) {
-                    return `LOGO 載入失敗 (無法生成)`;
                 }
                 return `模型公仔神生成`;
             };
@@ -1877,7 +1872,7 @@
                                     isAnyAiProcessActive={isAnyAiProcessActive} 
                                 />
                                 <ImageUploadSection
-                                    uploadedImage={uploadedImageFull} // 使用 full URL 進行預覽
+                                    uploadedImage={uploadedImage}
                                     onImageSelected={(base64, mimeType) => handleImageSelected(base64, mimeType)}
                                     setAppError={setAppErrorMemo}
                                     isAnyAiProcessActive={isAnyAiProcessActive}
@@ -1888,20 +1883,20 @@
                                 <Button
                                     onClick={handleGenerateClick}
                                     disabled={
-                                        !uploadedImageData || // 檢查 data 部分是否存在
+                                        !uploadedImage || 
                                         !uploadedImageMimeType || 
                                         isAnyAiProcessActive || 
                                         !getActiveApiKey() || 
                                         logoImageDetails.isLoading || // Disable if logo is still loading
-                                        (logoImageDetails.error && !logoImageDetails.base64Data) // Disable if logo failed to load AND no base64Data
+                                        (logoImageDetails.error && !logoImageDetails.base64) // Disable if logo failed to load AND no base64 (meaning it's essential)
                                     } 
                                     primary
                                     ariaLabel="生成模型公仔"
                                 >
                                     <div className="flex items-center justify-center gap-3">
-                                        {isLoading || cooldownEndTime > Date.now() || logoImageDetails.isLoading || (logoImageDetails.error && !logoImageDetails.base64Data) ? (
+                                        {isLoading || cooldownEndTime > Date.now() ? (
                                             <>
-                                                {(isLoading || logoImageDetails.isLoading) && <LoadingSpinner className="fa-icon-standard" />}
+                                                {isLoading && <LoadingSpinner className="fa-icon-standard" />}
                                                 <span>{getGenerateButtonText()}</span>
                                             </>
                                         ) : (
@@ -1920,7 +1915,7 @@
                                 progress={progress}
                                 onDownloadImage={handleDownloadRequest}
                                 onRegenerateImage={regenerateImageAtIndex}
-                                // onDownloadAll={handleDownloadRequest} // 由於只生成一個圖片，此 prop 不再需要
+                                onDownloadAll={handleDownloadRequest} 
                                 onStartOver={handleStartOver}
                                 isAnyAiProcessActive={isAnyAiProcessActive}
                             />
@@ -1940,3 +1935,4 @@
     </script>
 </body>
 </html>
+--- END OF FILE index.html ---
