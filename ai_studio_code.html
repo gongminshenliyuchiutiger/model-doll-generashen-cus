@@ -1,3 +1,4 @@
+--- START OF FILE index.html ---
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -687,13 +688,12 @@
 
     <!-- React CDN -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     
-    <!-- Babel Standalone for JSX conversion -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
     <!-- JSZip CDN (for downloading all images as zip) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Removed, as we only generate 1 image, not needing a zip. Keep if FIXED_GENERATE_COUNT > 1 is planned. -->
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script> -->
 
 </head>
 <body class="bg-light-primary text-dark-primary">
@@ -781,13 +781,13 @@
             },
             MAX_RETRIES: 5,
             INITIAL_BACKOFF: 1000,
-            FIXED_GENERATE_COUNT: 1, // Changed from 3 to 1 as requested
+            FIXED_GENERATE_COUNT: 1, 
             DEBOUNCE_DELAY: 300,
             GENERATION_DELAY: 500, // Small delay between image generations for visual effect
+            RATE_LIMIT_COOLDOWN_SECONDS: 60, // New constant for cooldown after 429
             MAX_IMAGE_SIZE_MB: 8, // Increased max size for detailed character images
             MAX_IMAGE_DIMENSIONS: { width: 4096, height: 4096 }, // Increased max dimensions
-            LOGO_IMAGE_PATH: 'logo/LiyuChillGuy.png', // New constant for logo path
-            // System instruction as used in Puti-AI example
+            LOGO_IMAGE_PATH: 'image/LiyuChillGuy.png', // Correct path
             SYSTEM_INSTRUCTION: {
                 parts: [{
                     text: "You are an image generation AI. Your sole purpose is to create an image based on the user's text prompt and uploaded image. Do not respond with any text, greetings, or explanations. Only output the final image."
@@ -802,7 +802,7 @@
         // --- Figure Generation Prompts (for different scene/style variations) ---
         // The base prompt remains the same, but we will generate 3 variations of it.
         // Updated prompt to include the LiyuChillGuy LOGO
-        const FIGURE_BASE_PROMPT = `指令：生成一張圖片。風格：超寫實商品攝影。內容：一個 1/7 比例的模型公仔，角色基於上傳的圖片。場景：公仔在現代電腦桌上，底座是透明圓形壓克力。旁邊的電腦螢幕顯示該模型的 ZBrush 3D 線框圖。螢幕旁有 BANDAI 風格的玩具包裝盒，盒面印有角色插畫，包裝盒上帶有上傳的 LiyuChillGuy LOGO 圖片作為品牌標誌。光線明亮，細節豐富。`; // Modified here
+        const FIGURE_BASE_PROMPT = `指令：生成一張圖片。風格：超寫實商品攝影。內容：一個 1/7 比例的模型公仔，角色基於上傳的圖片。場景：公仔在現代電腦桌上，底座是透明圓形壓克力。旁邊的電腦螢幕顯示該模型的 ZBrush 3D 線框圖。螢幕旁有 BANDAI 風格的玩具包裝盒，盒面印有角色插畫，包裝盒上帶有上傳的 LiyuChillGuy LOGO 圖片作為品牌標誌。光線明亮，細節豐富。`; 
 
 
         // --- Utility Functions ---
@@ -856,9 +856,10 @@
          * Sets an application-wide error message and logs it.
          * @param {Function} setError - React state setter for the error.
          * @param {string} message - The error message.
+         * @param {string} [consoleMessage=message] - Message to log to console.
          */
-        const setAppError = (setError, message) => {
-            console.error(message);
+        const setAppError = (setError, message, consoleMessage = message) => {
+            console.error(consoleMessage);
             setError(message);
         };
 
@@ -868,40 +869,47 @@
          * @param {Object} options - Fetch API options.
          * @param {number} [retries=CONSTANTS.MAX_RETRIES] - Number of retries.
          * @param {number} [backoff=CONSTANTS.INITIAL_BACKOFF] - Initial backoff delay in milliseconds.
-         * @returns {Promise<Object>} A promise that resolves with the JSON response.
+         * @returns {Promise<Object>} A promise that resolves with the JSON response, or throws an error.
          */
         const fetchWithRetry = async (url, options, retries = CONSTANTS.MAX_RETRIES, backoff = CONSTANTS.INITIAL_BACKOFF) => {
             let lastError;
             for (let i = 0; i < retries; i++) {
                 try {
                     const response = await fetch(url, options);
+                    const errorData = await response.json().catch(() => ({})); // Always try to parse JSON for errors
+
                     if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({}));
-                        console.error('API 錯誤:', errorData);
+                        console.error('API 錯誤回應:', response.status, errorData);
 
                         if (response.status === 429 && i < retries - 1) { // Retry for rate limits
-                            console.log(`請求頻率過高。將在 ${backoff / 1000} 秒後重試...`);
+                            console.log(`請求頻率過高 (429)。將在 ${backoff / 1000} 秒後重試...`);
                             await new Promise(res => setTimeout(res, backoff));
                             backoff *= 2; // Exponential backoff
                             continue;
                         } else if (response.status === 401) {
                             throw new Error(`API 請求失敗，狀態碼 401：未授權。請確認您的 API 金鑰是否有效。`);
-                        } else {
+                        } else if (response.status === 429) { // Last 429 attempt failed
+                             throw new Error(`API 請求頻率過高，或配額已用盡 (429)。請稍後再試，或檢查您的 Google AI Studio 配額。`);
+                        }
+                        else {
                             throw new Error(`API 請求失敗，狀態碼 ${response.status}: ${errorData.error?.message || '未知錯誤'}`);
                         }
                     }
-                    return response.json();
+                    return errorData; // Return parsed JSON on success
                 } catch (error) {
                     lastError = error;
                     console.error(`第 ${i + 1}/${retries} 次嘗試失敗:`, error);
-                    if (i < retries - 1) {
+                    if (i < retries - 1 && !(error.message.includes('401') || error.message.includes('配額'))) { // Don't retry for 401 or definite quota issues
                         console.log(`等待 ${backoff / 1000} 秒後進行下一次嘗試...`);
                         await new Promise(res => setTimeout(res, backoff));
                         backoff *= 2;
+                    } else if (error.message.includes('429') && i === retries -1) {
+                        // If the last retry failed due to 429, rethrow with specific message
+                        throw new Error(`API 請求頻率過高，或配額已用盡。請稍後再試，或檢查您的 Google AI Studio 配額。`);
                     }
                 }
             }
-            throw new Error(`在 ${retries} 次嘗試後失敗。最後錯誤: ${lastError?.message || '未知錯誤'}`);
+            throw lastError; // Rethrow the last encountered error after all attempts fail
         };
 
         /**
@@ -931,12 +939,14 @@
                     const candidate = result?.candidates?.[0];
 
                     if (!candidate) {
+                        console.error("API 完整回應 (缺少 candidate):", result); // Log full response for debugging
                         throw new Error('API 回應格式無效，缺少候選項目。');
                     }
 
                     // --- Puti-AI 範例的關鍵檢查點 ---
                     // 1. 檢查完成原因 (finishReason)
                     if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+                        console.error("API 完成原因非 STOP:", candidate.finishReason, result); // Log full response for debugging
                         throw new Error(`圖片生成因 '${candidate.finishReason}' 而停止。這可能是因為內容不適當、長度限制或其他內部原因。`);
                     }
 
@@ -946,6 +956,7 @@
                             .filter(rating => rating.probability !== 'NEGLIGIBLE' && rating.category !== 'HARM_CATEGORY_UNSPECIFIED')
                             .map(rating => rating.category)
                             .join(', ');
+                        console.error("API 安全評級偵測到問題:", candidate.safetyRatings, result); // Log full response for debugging
                         throw new Error(`請求因安全考量被拒絕。偵測到類別：${blockedCategories}。請嘗試使用不同的角色圖片或提示詞。`);
                     }
                     // --- 結束 Puti-AI 範例的關鍵檢查點 ---
@@ -958,25 +969,27 @@
                         // 如果沒有圖片，檢查是否有文字回應，這可能包含錯誤訊息
                         const textPart = candidate?.content?.parts?.find(p => p.text);
                         if (textPart && textPart.text.trim()) {
+                            console.error("API 未回傳圖片但有文字訊息:", textPart.text, result); // Log full response for debugging
                             throw new Error(`API 未回傳圖片，但提供了以下訊息：「${textPart.text}」`);
                         } else {
+                            console.error("API 回應中未找到有效的圖片或文字資料:", result); // Log full response for debugging
                             throw new Error('API 回應中未找到有效的圖片或文字資料。請檢查開發人員控制台以獲取完整回應。');
                         }
                     }
 
                 } catch (error) {
                     lastError = error;
-                    console.error(`第 ${attempt}/${totalAttempts} 次嘗試失敗:`, error);
+                    console.error(`第 ${attempt}/${totalAttempts} 次圖片生成嘗試失敗:`, error);
                 }
 
                 if (attempt < totalAttempts) {
                     const delay = 2500 * Math.pow(2, attempt - 1); // Exponential backoff for attempts
-                    console.log(`等待 ${delay / 1000} 秒後進行下一次嘗試...`);
+                    console.log(`等待 ${delay / 1000} 秒後進行下一次圖片生成嘗試...`);
                     await new Promise(res => setTimeout(res, delay));
                 }
             }
 
-            throw new Error(`圖片生成在 ${totalAttempts} 次嘗試後失敗。最後錯誤: ${lastError?.message || '未知錯誤'}`);
+            throw lastError; // Rethrow the last encountered error after all attempts fail
         };
 
         /**
@@ -1222,7 +1235,12 @@
                             <li className="mb-2">系統會立即產生一組新的金鑰。點擊金鑰旁邊的複製圖示。</li>
                             <li>回到本頁面，將複製的金鑰貼到輸入框中即可！</li>
                         </ol>
-                        <p className="text-sm text-error-light"><strong>提醒：</strong>請妥善保管您的 API 金鑰，不要與他人分享。</p>
+                        <p className="text-sm text-error-light mb-2"><strong>提醒：</strong></p>
+                        <ul className="list-disc list-inside text-sm text-error-light mb-4">
+                            <li>請妥善保管您的 API 金鑰，不要與他人分享。</li>
+                            <li>免費金鑰有使用配額限制。若頻繁遇到 "請求頻率過高 (429)" 或 "配額用盡" 錯誤，請前往 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-accent-blue-main underline">Google AI Studio</a> 查看您的配額使用情況。</li>
+                        </ul>
+
                         <ModalCloseButton onClick={onClose} ariaLabel="關閉 API 金鑰教學模態視窗" />
                     </div>
                 </div>
@@ -1308,7 +1326,11 @@
                                 resolve();
                             }
                         };
-                        img.onerror = reject;
+                        img.onerror = () => {
+                             setAppError(`無法讀取圖片檔案。請確認圖片格式正確。`);
+                             URL.revokeObjectURL(img.src);
+                             reject();
+                        };
                     });
                 } catch {
                     return; // Error already set, prevent further processing
@@ -1412,7 +1434,6 @@
          * @param {number} props.progress - Generation progress percentage.
          * @param {Function} props.onDownloadImage - Handler for downloading a single image.
          * @param {Function} props.onRegenerateImage - Handler to regenerate a single image.
-         * @param {Function} props.onDownloadAll - Handler to download all successful images as a zip.
          * @param {Function} props.onStartOver - Handler to reset the application.
          * @param {boolean} props.isAnyAiProcessActive - Flag to disable actions during AI processes.
          */
@@ -1422,12 +1443,10 @@
             progress, 
             onDownloadImage, 
             onRegenerateImage, 
-            onDownloadAll, 
             onStartOver, 
             isAnyAiProcessActive 
         }) => {
             const resultsRef = useRef(null);
-            const [isZipping, setIsZipping] = useState(false); // Kept for consistency, but not used for single download
 
             useEffect(() => {
                 if (isLoading) {
@@ -1524,20 +1543,22 @@
 
         // --- Main Application Component ---
         const App = () => {
-            const [uploadedImage, setUploadedImage] = useState(null); 
-            const [uploadedImageMimeType, setUploadedImageMimeType] = useState(null); // Store mime type
+            const [uploadedImageFull, setUploadedImageFull] = useState(null); // 儲存完整的 Base64 URL (用於預覽)
+            const [uploadedImageData, setUploadedImageData] = useState(null); // 儲存 Base64 數據部分 (用於 API Payload)
+            const [uploadedImageMimeType, setUploadedImageMimeType] = useState(null); 
             const [generatedImages, setGeneratedImages] = useState([]);
             const [isLoading, setIsLoading] = useState(false);
             const [error, setError] = useState(null);
             
             const [apiKey, setApiKey] = useState('');
+            const [cooldownEndTime, setCooldownEndTime] = useState(0); 
 
             // New state for the logo image
             const [logoImageDetails, setLogoImageDetails] = useState({
-                base64: null,
+                base64Data: null, // 儲存 Base64 數據部分 (用於 API Payload)
                 mimeType: null,
-                loaded: false,
-                error: false,
+                isLoading: true, // Renamed from 'loaded', now truly reflects loading state
+                error: false,    // Tracks if loading failed
             });
 
             // On component mount: load saved API key and the logo image
@@ -1552,26 +1573,39 @@
                     try {
                         const response = await fetch(CONSTANTS.LOGO_IMAGE_PATH);
                         if (!response.ok) {
-                            throw new Error(`Failed to load logo image: ${response.statusText}`);
+                            throw new Error(`Failed to load logo image: ${response.statusText} (${response.status})`);
                         }
                         const blob = await response.blob();
                         const base64 = await blobToBase64(blob);
                         setLogoImageDetails({
-                            base64,
+                            base64Data: base64.split(',')[1], // 提取並儲存 data 部分
                             mimeType: blob.type,
-                            loaded: true,
+                            isLoading: false, // Loading finished
                             error: false,
                         });
                         console.log('Logo image loaded successfully.');
                     } catch (err) {
                         console.error('Error loading logo image:', err);
-                        setLogoImageDetails(prev => ({ ...prev, error: true, loaded: true }));
-                        setAppError(setError, `無法載入品牌 LOGO 圖片 (${CONSTANTS.LOGO_IMAGE_PATH})，生成圖片時可能無法顯示 LOGO。`);
+                        // Set isLoading to false and error to true upon failure
+                        setLogoImageDetails(prev => ({ ...prev, error: true, isLoading: false })); 
+                        setAppError(setError, `無法載入品牌 LOGO 圖片。本次生成將不會包含 LOGO。`, `無法載入品牌 LOGO 圖片 (${CONSTANTS.LOGO_IMAGE_PATH}): ${err.message}`); // Changed error message
                     }
                 };
 
                 loadLogoImage();
-            }, []); // Empty dependency array means this runs once on mount
+            }, []); 
+
+            // Cooldown timer effect
+            useEffect(() => {
+                const timer = setInterval(() => {
+                    if (cooldownEndTime > 0 && Date.now() >= cooldownEndTime) {
+                        setCooldownEndTime(0);
+                        setError(null); // Clear 429 error message after cooldown
+                    }
+                }, 1000); 
+                return () => clearInterval(timer);
+            }, [cooldownEndTime]);
+
 
             // Handle API key input changes (Debounced and Sanitized)
             const handleApiKeyChange = useCallback(
@@ -1585,14 +1619,16 @@
 
             const getActiveApiKey = useCallback(() => apiKey.trim(), [apiKey]);
 
-            const setAppErrorMemo = useCallback((message) => setAppError(setError, message), []);
+            const setAppErrorMemo = useCallback((message, consoleMessage) => setAppError(setError, message, consoleMessage), []);
             const dismissError = useCallback(() => setError(null), []);
 
-            const handleImageSelected = useCallback((base64Image, mimeType) => {
-                setUploadedImage(base64Image);
+            const handleImageSelected = useCallback((base64ImageFull, mimeType) => {
+                setUploadedImageFull(base64ImageFull); // 儲存完整的 Base64 URL
+                setUploadedImageData(base64ImageFull.split(',')[1]); // 提取並儲存 Base64 數據部分
                 setUploadedImageMimeType(mimeType);
-                setGeneratedImages([]); // Clear previous results on new image upload
+                setGeneratedImages([]); 
                 setError(null);
+                setCooldownEndTime(0); 
             }, []);
 
 
@@ -1600,7 +1636,7 @@
             const figureGenerationTasks = useMemo(() => {
                 const tasks = [];
                 for (let i = 0; i < CONSTANTS.FIXED_GENERATE_COUNT; i++) {
-                    const id = `現代電腦桌公仔`; // Simplified ID for single generation
+                    const id = `現代電腦桌公仔`; 
                     const cleanId = `modern-computer-desk-figure`;
                     tasks.push({ id, cleanId, prompt: FIGURE_BASE_PROMPT });
                 }
@@ -1609,39 +1645,38 @@
 
             const regenerateImageAtIndex = useCallback(async (imageIndex) => {
                 const imageToRegenerate = generatedImages[imageIndex];
-                if (!imageToRegenerate || !uploadedImage || !uploadedImageMimeType) return;
+                if (!imageToRegenerate || !uploadedImageData || !uploadedImageMimeType) return; // 檢查 uploadedImageData
             
                 setGeneratedImages(prev => prev.map((img, index) =>
                     index === imageIndex ? { ...img, status: 'pending', imageUrl: null } : img
                 ));
                 setError(null);
             
-                if (!getActiveApiKey()) {
+                const currentApiKey = getActiveApiKey();
+                if (!currentApiKey) {
                     setAppError(setError, "請提供您的 Google Gemini API 金鑰來重新生成模型公仔。");
                     setGeneratedImages(prev => prev.map((img, index) => index === imageIndex ? { ...img, status: 'failed' } : img));
                     return;
                 }
     
                 try {
-                    const imageWithoutPrefix = uploadedImage.split(',')[1];
-                    const modelInstruction = getModelInstruction(imageToRegenerate.prompt); // Use the prompt from the task
+                    const modelInstruction = getModelInstruction(imageToRegenerate.prompt); 
                     
                     // Construct the parts array for Gemini API
                     const parts = [
                         CONSTANTS.SYSTEM_INSTRUCTION.parts[0],
                         { text: modelInstruction },
-                        { inlineData: { mimeType: uploadedImageMimeType, data: imageWithoutPrefix } }
+                        { inlineData: { mimeType: uploadedImageMimeType, data: uploadedImageData } } // 使用預處理的數據部分
                     ];
 
-                    // Add logo image if loaded successfully
-                    if (logoImageDetails.loaded && !logoImageDetails.error && logoImageDetails.base64) {
+                    // Add logo image ONLY IF it loaded successfully
+                    // 這段邏輯保持不變，如果 logoImageDetails.base64Data 是 null，它就不會被加到 parts 中。
+                    if (!logoImageDetails.isLoading && !logoImageDetails.error && logoImageDetails.base64Data) { // 檢查 base64Data
                         parts.push({
-                            inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64.split(',')[1] }
+                            inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64Data } // 使用預處理的數據部分
                         });
-                    } else if (logoImageDetails.error) {
-                        console.warn("Skipping logo image in payload due to previous loading error.");
-                    } else if (logoImageDetails.loaded && !logoImageDetails.base64) {
-                        console.warn("Skipping logo image in payload because base64 data is null even if loaded.");
+                    } else {
+                        console.warn("LOGO 圖片未被包含在請求中 (可能仍在載入或載入失敗)。");
                     }
 
                     const payload = {
@@ -1656,35 +1691,57 @@
                     ));
     
                 } catch (err) {
-                    console.error(`為 ${imageToRegenerate.id} 重新生成失敗:`, err);
-                    setAppError(setError, `哎呀！為 "${imageToRegenerate.id}" 重新生成失敗。錯誤: ${err.message}`);
+                    // Specific handling for 429
+                    if (err.message.includes('429') || err.message.includes('配額')) {
+                        setCooldownEndTime(Date.now() + CONSTANTS.RATE_LIMIT_COOLDOWN_SECONDS * 1000);
+                        setAppError(setError, `請求頻率過高，或配額已用盡。請等待 ${CONSTANTS.RATE_LIMIT_COOLDOWN_SECONDS} 秒後再試，或檢查您的 Google AI Studio 配額。`, `為 "${imageToRegenerate.id}" 重新生成失敗: ${err.message}`);
+                    } else {
+                        setAppError(setError, `哎呀！為 "${imageToRegenerate.id}" 重新生成失敗。錯誤: ${err.message}`);
+                    }
                     setGeneratedImages(prev => prev.map((img, index) =>
                         index === imageIndex ? { ...img, status: 'failed' } : img
                     ));
                 }
-            }, [generatedImages, uploadedImage, uploadedImageMimeType, getActiveApiKey, setError, figureGenerationTasks, logoImageDetails]); // Added logoImageDetails to dependencies
+            }, [generatedImages, uploadedImageData, uploadedImageMimeType, getActiveApiKey, setError, figureGenerationTasks, logoImageDetails, setCooldownEndTime]); 
             
             // Generate all images logic
             const handleGenerateClick = useCallback(async () => {
-                if (!uploadedImage || !uploadedImageMimeType) {
+                if (cooldownEndTime > Date.now()) {
+                    setAppError(setError, `請稍候。生成按鈕正在冷卻中，還有約 ${Math.ceil((cooldownEndTime - Date.now()) / 1000)} 秒。`);
+                    return;
+                }
+
+                if (!uploadedImageData || !uploadedImageMimeType) { // 檢查 uploadedImageData
                     setAppError(setError, "請先上傳一張角色圖片！");
                     return;
                 }
                 
-                if (!getActiveApiKey()) {
+                const currentApiKey = getActiveApiKey();
+                if (!currentApiKey) {
                     setAppError(setError, "請提供您的 Google Gemini API 金鑰來生成模型公仔。");
                     return;
                 }
                 
+                // IMPORTANT: Check logo status before starting generation
+                if (logoImageDetails.isLoading) {
+                    setAppError(setError, "品牌 LOGO 圖片仍在載入中，請稍候。");
+                    return; // LOGO 仍在載入時，依然應該阻止生成，以免 LOGO 圖片還沒準備好。
+                }
+                if (logoImageDetails.error && !logoImageDetails.base64Data) {
+                    // LOGO 載入失敗，發出警告，但 *不* 阻止生成。
+                    setAppError(setError, "品牌 LOGO 圖片載入失敗，本次生成將不會包含 LOGO。");
+                    // 注意：這裡移除了 return; 讓程序繼續執行
+                }
+
                 setIsLoading(true);
                 setError(null);
                 setGeneratedImages([]);
+                setCooldownEndTime(0); 
                 
-                const imageWithoutPrefix = uploadedImage.split(',')[1];
                 const initialPlaceholders = figureGenerationTasks.map(task => ({
                     id: task.id,
-                    cleanId: task.cleanId, // Store cleanId for download
-                    prompt: task.prompt, // Store the specific prompt for regeneration
+                    cleanId: task.cleanId, 
+                    prompt: task.prompt, 
                     status: 'pending', 
                     imageUrl: null,
                 }));
@@ -1704,18 +1761,16 @@
                         const parts = [
                             CONSTANTS.SYSTEM_INSTRUCTION.parts[0],
                             { text: modelInstruction },
-                            { inlineData: { mimeType: uploadedImageMimeType, data: imageWithoutPrefix } }
+                            { inlineData: { mimeType: uploadedImageMimeType, data: uploadedImageData } } // 使用預處理的數據部分
                         ];
 
-                        // Add logo image if loaded successfully
-                        if (logoImageDetails.loaded && !logoImageDetails.error && logoImageDetails.base64) {
+                        // Add logo image ONLY IF it loaded successfully
+                        if (!logoImageDetails.isLoading && !logoImageDetails.error && logoImageDetails.base64Data) { // 檢查 base64Data
                             parts.push({
-                                inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64.split(',')[1] }
+                                inlineData: { mimeType: logoImageDetails.mimeType, data: logoImageDetails.base64Data } // 使用預處理的數據部分
                             });
-                        } else if (logoImageDetails.error) {
-                            console.warn("Skipping logo image in payload due to previous loading error.");
-                        } else if (logoImageDetails.loaded && !logoImageDetails.base64) {
-                            console.warn("Skipping logo image in payload because base64 data is null even if loaded.");
+                        } else {
+                            console.warn("LOGO 圖片未被包含在請求中 (可能仍在載入或載入失敗)。");
                         }
 
                         const payload = {
@@ -1731,16 +1786,21 @@
 
                     } catch (err) {
                         console.error(`為 ${task.id} 生成圖片在所有重試後失敗:`, err);
-                        setGeneratedImages(prev => prev.map((img, index) =>
-                            index === i ? { ...img, status: 'failed', error: err.message } : img
-                        ));
-                        setAppError(setError, `哎呀！為 "${task.id}" 生成失敗。錯誤: ${err.message}`); 
+                        // Specific handling for 429
+                        if (err.message.includes('429') || err.message.includes('配額')) {
+                            setCooldownEndTime(Date.now() + CONSTANTS.RATE_LIMIT_COOLDOWN_SECONDS * 1000);
+                            setAppError(setError, `請求頻率過高，或配額已用盡。請等待 ${CONSTANTS.RATE_LIMIT_COOLDOWN_SECONDS} 秒後再試，或檢查您的 Google AI Studio 配額。`, `為 "${task.id}" 生成失敗: ${err.message}`);
+                        } else {
+                            setAppError(setError, `哎呀！為 "${task.id}" 生成失敗。錯誤: ${err.message}`);
+                        }
+                        // Break out of the loop if a critical error like 429 or quota is hit
+                        break; 
                     }
-                    await new Promise(resolve => setTimeout(resolve, CONSTANTS.GENERATION_DELAY)); // Small delay for visual effect
+                    await new Promise(resolve => setTimeout(resolve, CONSTANTS.GENERATION_DELAY)); 
                 }
 
                 setIsLoading(false);
-            }, [uploadedImage, uploadedImageMimeType, getActiveApiKey, figureGenerationTasks, setError, logoImageDetails]); // Added logoImageDetails to dependencies
+            }, [uploadedImageData, uploadedImageMimeType, getActiveApiKey, figureGenerationTasks, setError, logoImageDetails, cooldownEndTime]);
 
             const triggerDownload = useCallback((href, fileName) => {
                 const link = document.createElement('a');
@@ -1760,19 +1820,39 @@
 
             const handleStartOver = useCallback(() => {
                 setGeneratedImages([]);
-                setUploadedImage(null);
+                setUploadedImageFull(null); // 重置完整的 Base64 URL
+                setUploadedImageData(null);  // 重置 Base64 數據部分
                 setUploadedImageMimeType(null);
                 setError(null);
+                setCooldownEndTime(0); 
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }, []);
 
             // Check if any AI-related process is active to disable general buttons
-            const isAnyAiProcessActive = isLoading;
+            const isAnyAiProcessActive = isLoading || cooldownEndTime > Date.now();
 
             const progress = useMemo(() => {
                 const completed = generatedImages.filter(img => img.status === 'success' || img.status === 'failed').length;
                 return generatedImages.length > 0 ? (completed / generatedImages.length) * 100 : 0;
             }, [generatedImages]);
+
+            const getGenerateButtonText = () => {
+                if (isLoading) {
+                    return `生成中... (${Math.round(progress)}%)`;
+                }
+                if (cooldownEndTime > Date.now()) {
+                    const remainingSeconds = Math.ceil((cooldownEndTime - Date.now()) / 1000);
+                    return `請稍候 (${remainingSeconds} 秒)`;
+                }
+                if (logoImageDetails.isLoading) {
+                    return `載入 LOGO 圖片中...`;
+                }
+                if (logoImageDetails.error && !logoImageDetails.base64Data) {
+                    return `LOGO 載入失敗 (可繼續生成)`; // 更改這裡的文本
+                }
+                return `模型公仔神生成`;
+            };
+
 
             return (
                 <>
@@ -1794,7 +1874,7 @@
                                     isAnyAiProcessActive={isAnyAiProcessActive} 
                                 />
                                 <ImageUploadSection
-                                    uploadedImage={uploadedImage}
+                                    uploadedImage={uploadedImageFull} // 使用 full URL 進行預覽
                                     onImageSelected={(base64, mimeType) => handleImageSelected(base64, mimeType)}
                                     setAppError={setAppErrorMemo}
                                     isAnyAiProcessActive={isAnyAiProcessActive}
@@ -1804,21 +1884,26 @@
                             <div className="generate-button-area">
                                 <Button
                                     onClick={handleGenerateClick}
-                                    disabled={!uploadedImage || !uploadedImageMimeType || isAnyAiProcessActive || !getActiveApiKey() || !logoImageDetails.loaded} // Disable if logo not loaded
+                                    disabled={
+                                        !uploadedImageData || // 檢查 data 部分是否存在
+                                        !uploadedImageMimeType || 
+                                        isAnyAiProcessActive || 
+                                        !getActiveApiKey() || 
+                                        logoImageDetails.isLoading // 僅在 LOGO 仍在載入時禁用，載入失敗則不禁用
+                                    } 
                                     primary
                                     ariaLabel="生成模型公仔"
                                 >
                                     <div className="flex items-center justify-center gap-3">
-                                        {isLoading ? (
+                                        {isLoading || cooldownEndTime > Date.now() || logoImageDetails.isLoading ? ( // 這裡的條件要與 disabled 保持一致
                                             <>
-                                                <LoadingSpinner className="fa-icon-standard" />
-                                                <span>{`生成中... (${Math.round(progress)}%)`}</span>
+                                                {(isLoading || logoImageDetails.isLoading) && <LoadingSpinner className="fa-icon-standard" />}
+                                                <span>{getGenerateButtonText()}</span>
                                             </>
                                         ) : (
                                             <>
                                                 <i className="fa-solid fa-magic fa-icon-standard"></i>
-                                                {/* Updated button text for single generation */}
-                                                <span>模型公仔神生成</span>
+                                                <span>{getGenerateButtonText()}</span>
                                             </>
                                         )}
                                     </div>
@@ -1831,7 +1916,6 @@
                                 progress={progress}
                                 onDownloadImage={handleDownloadRequest}
                                 onRegenerateImage={regenerateImageAtIndex}
-                                onDownloadAll={handleDownloadRequest} // Will be handled internally by ResultsDisplay (now downloads single)
                                 onStartOver={handleStartOver}
                                 isAnyAiProcessActive={isAnyAiProcessActive}
                             />
@@ -1851,3 +1935,4 @@
     </script>
 </body>
 </html>
+--- END OF FILE index.html ---
